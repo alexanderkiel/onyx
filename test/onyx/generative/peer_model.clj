@@ -550,6 +550,7 @@
                                :onyx.messaging.aeron/media-driver-dir media-driver-dir
                                :onyx/tenancy-id onyx-id
                                :onyx.messaging/impl messenger-type
+                               :onyx.log/file "/Volumes/ramdisk/onyx.log"
                                ;:onyx.log/config {:level :info}
                                )
             _ (println "Media driver dir" media-driver-dir)

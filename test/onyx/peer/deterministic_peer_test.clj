@@ -241,41 +241,40 @@
                                     p (mapv (fn [oid]
                                               (keyword (str "p" oid)))
                                             (range g/n-max-peers))]
-                                [g p])
-                  finish-iterations (->> (concat (mapcat 
-                                                  (fn [[g p]] 
-                                                    [{:type :peer
-                                                      :command :task-iteration
-                                                      ;; Should be one for each known peer in the group, once it's
-                                                      ;; not one peer per group
-                                                      :group-id g
-                                                      :peer-owner-id [g p]
-                                                      ;; Two iterations between barriers to improve completion odds?
-                                                      :iterations 1}])
-                                                  peer-groups) 
-                                                 ;; Then a periodic barrier and a couple offer barriers
-                                                 ;; Not all of these will be coordinators
-                                                 (mapcat 
-                                                  (fn [[g p]] 
-                                                    ;; Emit a barrier on a coordinator
-                                                    [{:type :peer
-                                                      :command :periodic-barrier
-                                                      ;; Should be one for each known peer in the group, 
-                                                      ;; once it's not one peer per group
-                                                      :group-id g
-                                                      :peer-owner-id [g p]
-                                                      :iterations 1}
-                                                     {:type :peer
-                                                      :command :offer-barriers
-                                                      :group-id g
-                                                      :peer-owner-id [g p]
-                                                      :iterations 1}])
-                                                  peer-groups))
-                                         (repeat n-cycles)
-                                         (reduce into []))
-                  ;; Allows emitting exhaust-inputs and thus job completion
-                  drain-commands [{:type :drain-commands}]]
-              (into finish-iterations drain-commands)))
+                                [g p])]
+              (->> (concat (mapcat 
+                            (fn [[g p]] 
+                              [{:type :peer
+                                :command :task-iteration
+                                ;; Should be one for each known peer in the group, once it's
+                                ;; not one peer per group
+                                :group-id g
+                                :peer-owner-id [g p]
+                                ;; Two iterations between barriers to improve completion odds?
+                                :iterations 1}])
+                            peer-groups) 
+                           ;; Then a periodic barrier and a couple offer barriers
+                           ;; Not all of these will be coordinators
+                           (mapcat 
+                            (fn [[g p]] 
+                              ;; Emit a barrier on a coordinator
+                              [{:type :peer
+                                :command :periodic-barrier
+                                ;; Should be one for each known peer in the group, 
+                                ;; once it's not one peer per group
+                                :group-id g
+                                :peer-owner-id [g p]
+                                :iterations 1}
+                               {:type :peer
+                                :command :offer-barriers
+                                :group-id g
+                                :peer-owner-id [g p]
+                                :iterations 1}])
+                            peer-groups)
+                           ;; drain after each cycle so peers can reboot if necessary
+                           [{:type :drain-commands}])
+                   (repeat n-cycles)
+                   (reduce into []))))
           jobs)) 
 
 (defn partition-peers-over-groups [n-groups n-peers]

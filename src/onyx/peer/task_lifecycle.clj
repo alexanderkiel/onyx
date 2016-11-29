@@ -141,8 +141,9 @@
 (defn offer-heartbeats [state]
   (let [messenger (get-messenger state)]
     ;; TODO, should only emit heartbeat from publisher if no message was sent in last iteration
+    ;; Or if some time period has passed
     (run! pub/offer-heartbeat! (m/publishers messenger))
-    (run! sub/offer-heartbeat! (m/subscriber messenger))
+    (sub/offer-heartbeat! (m/subscriber messenger))
     (advance state)))
 
 (defn checkpoint-input [state]
@@ -204,7 +205,7 @@
         (advance state)))))
 
 ;; Gonna have to move this into the subscriber logic
-(defn offer-barrier-aligneds [state]
+(defn offer-barrier-status [state]
   (let [messenger (get-messenger state)
         ;; FIXME
         _ (run! pub/poll-heartbeats! (m/publishers (get-messenger state)))
@@ -217,7 +218,7 @@
     (loop [src-peers (:src-peers context)]
       (if-not (empty? src-peers)
         (let [src-peer-id (first src-peers)
-              ret (sub/offer-barrier-aligned! (m/subscriber messenger) src-peer-id)]
+              ret (sub/offer-barrier-status! (m/subscriber messenger) src-peer-id)]
           (if (pos? ret)
             (recur (rest src-peers))
             (set-context! state (assoc context :src-peers src-peers))))
@@ -347,25 +348,39 @@
       state)))
 
 (defn iteration [state-machine replica]
-  (viz/update-monitoring! state-machine)
-  (loop [sm (if-not (= (get-replica state-machine) replica)
-              (next-replica! state-machine replica)
-              state-machine)]
-    ;(println "State before exec?")
-    (print-state sm)
-    (let [next-sm (exec sm)]
-      ;(println "State after exec?")
-      ;(print-state sm)
-      ;(println "Next state for loop. advanced:" (advanced? sm) "new iter" (new-iteration? sm))
-      (if (and (advanced? sm) 
-               (not (new-iteration? sm)))
-        (recur next-sm)
-        ;; Blocked for some reason
-        (do
-         ;; TODO REMOVE?
-         (info "Polling heartbeats because blocked, keep things going")
-         (run! pub/poll-heartbeats! (m/publishers (get-messenger sm)))
-         next-sm)))))
+  (try
+   (viz/update-monitoring! state-machine)
+   (if (killed? state-machine)
+     state-machine
+     (loop [sm (if-not (= (get-replica state-machine) replica)
+                 (next-replica! state-machine replica)
+                 state-machine)]
+       ;(println "State before exec?")
+       (print-state sm)
+       (let [next-sm (exec sm)]
+         ;(println "State after exec?")
+         ;(print-state sm)
+         ;(println "Next state for loop. advanced:" (advanced? sm) "new iter" (new-iteration? sm))
+         (if (and (advanced? sm) 
+                  (not (new-iteration? sm)))
+           (recur next-sm)
+           ;; Blocked for some reason
+           (do
+            ;; TODO REMOVE?
+            (info "Polling heartbeats because blocked, keep things going")
+            (run! pub/poll-heartbeats! (m/publishers (get-messenger sm)))
+            next-sm)))))
+  (catch Throwable t
+    ;; CATCH MESSENGER ERRORS AND OTHER REBOOTABLE ERRORS. IF NOT, PAS ON TO THE LIFECYCLE BIT
+    (let [peer-id (:id (get-event state-machine))]
+      (error t peer-id "Error caught, rebooting peer. FIXME ADD WHAT LIFECYCLE IT WAS IN. SHOULD PROBABLY THROW STATE MACHNINE FROM EXCEPTION THEN USE IT FROM HERE RATHER THAN RETURNING CURRENT ONE?")
+      (println "Sending restart vpeer" peer-id)
+      ;; SHOULD ONLY REBOOT ONCE, NOT ON THE NEXT ITERATION.
+      ;; SHOULD MAKE SURE WE CAN ACTUALLY RESTART VPEER THING
+      ;; SHOULD SET KILLED?
+      (close! (:kill-ch (get-event state-machine)))
+      (>!! (:group-ch (get-event state-machine)) [:restart-vpeer peer-id]))
+    state-machine)))
 
 (defn run-task-lifecycle
   "The main task run loop, read batch, ack messages, etc."
@@ -426,13 +441,6 @@
 (defn new-task-information [peer task]
   (map->TaskInformation (select-keys (merge peer task) [:log :job-id :task-id :id])))
 
-(defn epoch-gaps? [barriers]
-  (and (not (empty? barriers))
-       (let [epochs (keys barriers)
-             mn (apply min epochs)
-             mx (apply max epochs)]
-         (not= (set epochs) (set (range mn (inc mx)))))))
-
 ;; Publisher heartbeats
 ;; At the start of each cycle, set all publications to used? false
 ;; Whenever you send a message / barrier / whatever to a publication, set used? true
@@ -462,8 +470,8 @@
       (#{:input :function} task-type)         (conj {:lifecycle :offer-barriers
                                                      :fn offer-barriers
                                                      :blockable? true})
-      (#{:input :function :output} task-type) (conj {:lifecycle :offer-barrier-aligneds
-                                                     :fn offer-barrier-aligneds
+      (#{:input :function :output} task-type) (conj {:lifecycle :offer-barrier-status
+                                                     :fn offer-barrier-status
                                                      :blockable? true})
       (#{:input} task-type)                   (conj {:lifecycle :recover-input 
                                                      :fn recover-input})
@@ -496,8 +504,8 @@
                                                      :fn offer-barriers
                                                      :blockable? true})
       ;; rename aligneds -> aligments
-      (#{:input :function :output} task-type) (conj {:lifecycle :offer-barrier-aligneds
-                                                     :fn offer-barrier-aligneds
+      (#{:input :function :output} task-type) (conj {:lifecycle :offer-barrier-status
+                                                     :fn offer-barrier-status
                                                      :blockable? true})
       (#{:input :function :output} task-type) (conj {:lifecycle :unblock-subscribers
                                                      :fn unblock-subscribers})
@@ -523,7 +531,8 @@
       (#{:input :function :output} task-type) (conj {:lifecycle :after-batch
                                                      :fn (build-lifecycle-invoke-fn event :compiled-after-batch-fn)})
       
-      #_#_(#{:input :function :output} task-type) (conj {:lifecycle :offer-heartbeats
+      ;; FIXME, very wasteful to always do this every iteration
+      (#{:input :function :output} task-type) (conj {:lifecycle :offer-heartbeats
                                                      :fn offer-heartbeats}))))
 
 (deftype TaskStateMachine [^int recover-idx 
