@@ -13,8 +13,8 @@
   ;; TO REMOVE
   ;:onyx.peer/subscriber-liveness-timeout-ms 0
   :onyx.peer/coordinator-barrier-period-ms 500
-  :onyx.peer/publisher-liveness-timeout-ms 500
-  :onyx.peer/heartbeat-ms 5
+  :onyx.peer/publisher-liveness-timeout-ms 5000
+  :onyx.peer/heartbeat-ms 50
   :onyx.peer/zookeeper-timeout 60000
   :onyx.messaging.aeron/embedded-driver? true
   :onyx.messaging/allow-short-circuit? false

@@ -1,4 +1,4 @@
-(ns onyx.peer.min-peers-test
+(ns onyx.peer.stuck-peer-test
   (:require [clojure.core.async :refer [chan >!! <!! close! sliding-buffer]]
             [clojure.test :refer [deftest is testing]]
             [onyx.plugin.core-async :refer [take-segments!]]
@@ -39,6 +39,7 @@
     (with-test-env [test-env [3 env-config peer-config]]
       (let [batch-size 20
             catalog [{:onyx/name :in
+                      ;; FIXME NEED INPUT PLUGIN THAT CAN REPLAY
                       :onyx/plugin :onyx.plugin.core-async/input
                       :onyx/type :input
                       :onyx/medium :core.async

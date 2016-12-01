@@ -213,6 +213,15 @@
                     :closed? (.isClosed subscription)
                     :images (mapv autil/image->map (.images subscription))}
      :status-pubs (into {} (map (fn [[k v]] [k (status-pub/info v)]) status-pubs))})
+  ;; FIXME: RENAME
+  (timed-out-publishers [this]
+    (let [curr-time (System/currentTimeMillis)] 
+      (map key 
+           (filter (fn [[peer-id spub]] 
+                     (< (+ (status-pub/get-heartbeat spub)
+                           liveness-timeout)
+                        curr-time)) 
+                   status-pubs))))
   ;; TODO: add send heartbeat
   ;; This should be a separate call, only done once per task lifecycle, and also check when blocked
   (alive? [this]
@@ -263,7 +272,6 @@
   (completed? [this]
     (not (some (complement status-pub/completed?) (vals status-pubs))))
   (poll! [this]
-    (println "LIVENESS RESULTS" (sub/alive? this))
     (info "Before poll on channel" (sub/info this))
 
 
@@ -282,7 +290,7 @@
     ; GET TESTS IN SHAPE, BRING BACK ONYX MAP
     
     ;; Move this check into task lifecycle?
-    (let [alive? (sub/alive? this)] 
+    #_(let [alive? (sub/alive? this)] 
       (when-not (= :alive alive?)
         (throw (ex-info "Subscriber isn't alive any more." 
                         {:src-peer-ids (keys status-pubs)

@@ -43,8 +43,8 @@
     (info "Stopping endpoint status" [peer-id])
     (try
      (.close subscription)
-     (catch io.aeron.exceptions.RegistrationException re
-       (info "ERR" re)))
+     (catch Throwable t
+       (info "Error closing endpoint subscription:" t)))
      (.close conn)
     (EndpointStatus. peer-config peer-id session-id nil nil nil nil nil nil nil nil nil false))
   (info [this]

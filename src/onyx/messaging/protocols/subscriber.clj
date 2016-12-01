@@ -16,6 +16,7 @@
   (unblock! [this])
   (alive? [this])
   (recovered? [this])
+  (timed-out-publishers [this])
   (set-recover! [this recover*])
   (set-recovered! [this])
   (add-assembler [this])
