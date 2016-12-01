@@ -7,6 +7,7 @@
             [onyx.monitoring.measurements :refer [emit-latency emit-latency-value]]
             [com.stuartsierra.component :as component]
             [onyx.messaging.protocols.messenger :as m]
+            [onyx.messaging.protocols.publisher :as pub]
             [onyx.messaging.messenger-state :as ms]
             [onyx.extensions :as extensions]
             [onyx.log.replica]
@@ -59,6 +60,11 @@
                         (get allocations task))))
          (set))))
 
+(defn offer-heartbeats
+  [{:keys [messenger] :as state}]
+  (run! pub/offer-heartbeat! (m/publishers messenger))
+  (assoc state :last-heartbeat-time (System/currentTimeMillis)))
+
 (defn offer-barriers
   [{:keys [messenger rem-barriers barrier-opts offering?] :as state}]
   (assert messenger)
@@ -71,6 +77,7 @@
             (recur (rest pubs))
             (assoc state :rem-barriers pubs)))
         (-> state 
+            (assoc :last-barrier-time (System/currentTimeMillis))
             (update :messenger m/unblock-subscriber!)
             (assoc :checkpoint-version nil)
             (assoc :offering? false)
@@ -86,6 +93,7 @@
         checkpoint-version (max-completed-checkpoints log new-replica job-id)
         new-messenger (m/next-epoch! new-messenger)]
     (assoc state 
+           :last-barrier-time (System/currentTimeMillis)
            :offering? true
            :barrier-opts {:recover checkpoint-version}
            :rem-barriers (m/publishers new-messenger)
@@ -103,7 +111,7 @@
              :rem-barriers (m/publishers messenger)
              :messenger messenger))))
 
-(defn coordinator-action [action-type {:keys [messenger peer-id job-id] :as state} new-replica]
+(defn coordinator-action [{:keys [messenger peer-id job-id] :as state} action-type new-replica]
   (info "Coordinator action" action-type)
   (assert 
    (if (#{:reallocation-barrier} action-type)
@@ -112,35 +120,48 @@
   ;(assert (= peer-id (get-in new-replica [:coordinators job-id])) [peer-id (get-in new-replica [:coordinators job-id])])
   (case action-type 
     :offer-barriers (offer-barriers state)
+    :offer-heartbeats (offer-heartbeats state)
     :shutdown (assoc state :messenger (component/stop messenger))
     :periodic-barrier (periodic-barrier state)
     :reallocation-barrier (emit-reallocation-barrier state new-replica)))
 
-(defn start-coordinator! [state]
+(defn start-coordinator! [{:keys [peer-config allocation-ch shutdown-ch] :as state}]
   (thread
    (try
-    (let [;; Generate from peer-config
-          ;; FIXME: put in job data
-          barrier-period-ms 500] 
-      (loop [state state]
-        (let [timeout-ch (timeout barrier-period-ms)
-              {:keys [shutdown-ch allocation-ch]} state
-              [v ch] (if (:offering? state)
-                       (alts!! [shutdown-ch allocation-ch] :default true)
-                       (alts!! [shutdown-ch allocation-ch timeout-ch]))]
-          (assert (:messenger state))
+    (let [;; FIXME: allow in job data
+          barrier-period-ms (arg-or-default :onyx.peer/coordinator-barrier-period-ms peer-config)
+          ; TODO
+          ;snapshot-every-n (arg-or-default :onyx.peer/coordinator-snapshot-every-n-barriers peer-config)
+          heartbeat-ms (arg-or-default :onyx.peer/heartbeat-ms peer-config)] 
+      (loop [state (-> state 
+                       (assoc :last-barrier-time (System/currentTimeMillis))
+                       (assoc :last-heartbeat-time (System/currentTimeMillis)))]
+        (if (poll! shutdown-ch)
+          (coordinator-action state :shutdown (:prev-replica state))
+          (let [replica (poll! allocation-ch)]
+            (cond replica
+                  ;; Set up reallocation barriers. Will be sent on next recur through :offer-barriers
+                  (recur (coordinator-action state :reallocation-barrier replica))
 
-          (cond (= ch shutdown-ch)
-                (recur (coordinator-action :shutdown state (:prev-replica state)))
+                  (:offering? state)
+                  ;; Continue offering barriers until success
+                  (recur (coordinator-action state :offer-barriers (:prev-replica state))) 
 
-                (= ch timeout-ch)
-                (recur (coordinator-action :periodic-barrier state (:prev-replica state)))
+                  (< (+ (:last-heartbeat-time state) heartbeat-ms) 
+                     (System/currentTimeMillis))
+                  ;; Immediately offer heartbeats
+                  (recur (coordinator-action state :offer-heartbeats (:prev-replica state)))
 
-                (true? v)
-                (recur (coordinator-action :offer-barriers state (:prev-replica state)))
+                  (< (+ (:last-barrier-time state) barrier-period-ms) 
+                     (System/currentTimeMillis))
+                  ;; Setup barriers, will be sent on next recur through :offer-barriers
+                  (recur (coordinator-action state :periodic-barrier (:prev-replica state)))
 
-                (and (= ch allocation-ch) v)
-                (recur (coordinator-action :reallocation-barrier state v))))))
+                  :else
+                  (do
+                   ;; Remove magic number
+                   (Thread/sleep 5)
+                   (recur state)))))))
     (catch Throwable e
       (>!! (:group-ch state) [:restart-vpeer (:peer-id state)])
       (fatal e "Error in coordinator")))))
@@ -165,6 +186,7 @@
 
 (defn stop-coordinator! [{:keys [shutdown-ch allocation-ch]}]
   (when shutdown-ch
+    (>!! shutdown-ch true)
     (close! shutdown-ch))
   (when allocation-ch 
     (close! allocation-ch)))

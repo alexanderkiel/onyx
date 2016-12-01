@@ -280,6 +280,8 @@
     ; FINISH OFF ZK
 
     ; GET TESTS IN SHAPE, BRING BACK ONYX MAP
+    
+    ;; Move this check into task lifecycle?
     (let [alive? (sub/alive? this)] 
       (when-not (= :alive alive?)
         (throw (ex-info "Subscriber isn't alive any more." 

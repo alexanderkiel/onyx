@@ -25,6 +25,10 @@
   {:lifecycle/before-task-start inject-out-ch})
 
 (defn my-inc [{:keys [n] :as segment}]
+  (when (rand-int 40)
+    (Thread/sleep 5000)
+    
+    )
   (assoc segment :n (inc n)))
 
 (deftest ^:smoke min-peers-test
